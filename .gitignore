@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.gcode
+!examples/two_cubes_synthetic.gcode
+!examples/BodyBox x4.gcode
+!examples/BodyBox x4 hybrid.gcode
+*.3mf
