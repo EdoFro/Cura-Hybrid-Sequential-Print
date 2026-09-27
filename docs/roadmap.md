@@ -16,11 +16,16 @@ pruebas automatizadas y pasar primero por revisión estática de G-code.
 - [Mejoras de seguridad y compatibilidad](#mejoras-de-seguridad-y-compatibilidad)
   - [Parser modal explícito](#parser-modal-explícito)
   - [Validación más completa del perfil](#validación-más-completa-del-perfil)
+  - [Soporte de extrusión absoluta](#soporte-de-extrusión-absoluta-p1--prioridad-alta)
+  - [Soportes normales](#soportes-normales-p2--prioridad-media)
+  - [Tree supports](#tree-supports-p3--prioridad-baja)
+  - [Raft y estructuras de adhesión](#raft-y-estructuras-de-adhesión-p2--prioridad-media)
   - [Impresión secuencial por múltiples etapas](#impresión-secuencial-por-múltiples-etapas)
   - [Detección automática de etapas térmicas](#detección-automática-de-etapas-térmicas)
   - [Pausa opcional para cambio de filamento](#pausa-opcional-para-cambio-de-filamento-entre-etapas)
   - [Transiciones y estacionamiento](#transiciones-configurables-y-zona-de-estacionamiento)
   - [Control térmico ampliado](#control-térmico-ampliado)
+    - [Cámara calefaccionada](#cámara-calefaccionada-p3--prioridad-baja)
 - [Calidad y pruebas](#calidad-y-pruebas)
 - [Experiencia de uso](#experiencia-de-uso)
 - [Ideas provenientes de pruebas físicas](#registro-de-ideas-provenientes-de-pruebas-físicas)
@@ -33,6 +38,10 @@ pruebas automatizadas y pasar primero por revisión estática de G-code.
 | Orden de impresión | Orden por altura, posición, distancia o selección manual | Media | Pendiente |
 | Seguridad física | Detección de colisiones y zona segura de estacionamiento | Alta | Investigación necesaria |
 | Compatibilidad G-code | Parser modal y validación ampliada del perfil | Alta | Pendiente |
+| Modo de extrusión | Soporte seguro de extrusión absoluta (`M82`) | Alta | Pendiente |
+| Soportes normales | Validar estructuras locales por objeto | Media | Pendiente |
+| Tree supports | Analizar geometría y variación lateral por capa | Baja | Pendiente |
+| Adhesión compleja | Raft y su relación con capas previas/compartidas | Media | Pendiente |
 | Impresión por etapas | Múltiples fronteras configurables y detección térmica automática | Media | Diseño propuesto |
 | Cambio de filamento | Pausa, beep, estacionamiento y reanudación segura | Media | Diseño propuesto |
 | Control térmico | Más comandos, herramientas y modo conservador | Media | Parcialmente implementado |
@@ -150,6 +159,63 @@ rechazo.
 - comprobar que los ajustes efectivos coincidan con los codificados en el
   comentario `SETTING_3` cuando esté disponible.
 
+### Soporte de extrusión absoluta (P1 / prioridad alta)
+
+Permitir G-code con extrusión absoluta (`M82`) sin alterar la cantidad de
+filamento extruida al reordenar capas. Antes de reanudar cada objeto, el script
+tendrá que restaurar el valor E que ese bloque esperaba mediante una secuencia
+validada, por ejemplo `G90`, `M82` y `G92 E...`, según el firmware compatible.
+
+La implementación deberá reconstruir el estado modal E al final de cada capa
+común, incluidos movimientos `G0`/`G1`/`G2`/`G3`, retracciones y reinicios
+`G92 E...`. Tendrá que rechazar cambios ambiguos entre `M82` y `M83`, múltiples
+extrusores, herramientas o formatos de E no interpretados. También deberá
+verificar qué efecto tiene `G90` sobre el modo de extrusión en cada firmware
+admitido.
+
+**Criterio de aceptación:** cada reanudación restablece el valor E esperado por
+el G-code original; fixtures cubren extrusión, retracciones, reinicios E y
+arcos; y pruebas físicas supervisadas en una impresora aprobada confirman que
+no hay sobreextrusión, subextrusión ni retracciones inesperadas.
+
+### Soportes normales (P2 / prioridad media)
+
+Investigar si los soportes normales de Cura se mantienen inequívocamente dentro
+del bloque de cada objeto en G-code `One at a Time`. El análisis deberá verificar
+que cada trayectoria de soporte, interfaz y techo/piso de soporte se asigne a un
+único objeto y se reordene con él, sin crear movimientos que crucen piezas ya
+terminadas.
+
+**Criterio de aceptación:** fixtures reales con soportes normales preservan cada
+trayectoria exactamente una vez, las capas y preámbulos siguen siendo
+inequívocos, y pruebas físicas supervisadas confirman la impresión correcta.
+Hasta entonces, `support_enable` debe continuar rechazándose.
+
+### Tree supports (P3 / prioridad baja)
+
+Evaluar por separado los tree supports. Sus ramas pueden variar lateralmente
+entre capas y acercarse a otros objetos, por lo que no se puede inferir su
+seguridad a partir del soporte normal. La investigación deberá incluir la
+geometría efectiva de cada rama y las restricciones de colisión del cabezal.
+
+**Criterio de aceptación:** una validación conservadora demuestra que ninguna
+rama ni transición del cabezal cruza una pieza o soporte incompatible; fixtures
+y pruebas físicas cubren casos de varias piezas. Hasta entonces, los tree
+supports continúan rechazados.
+
+### Raft y estructuras de adhesión (P2 / prioridad media)
+
+Investigar soporte para raft como una función distinta de los soportes. Un raft
+puede introducir capas negativas y estructuras compartidas antes de
+`;LAYER:0`, que no pertenecen sin ambigüedad a un solo objeto ni a la fase común
+actual. Brim permanece fuera de alcance mientras no exista una validación
+equivalente de sus trayectorias.
+
+**Criterio de aceptación:** el análisis distingue el raft de las capas de cada
+objeto, preserva todas sus trayectorias y estados térmicos/modales, y pruebas
+físicas supervisadas validan la adhesión y las transiciones. Hasta entonces,
+raft y brim continúan rechazados.
+
 ### Impresión secuencial por múltiples etapas
 
 Permitir configurar varias capas en las que comienza una nueva etapa. Por
@@ -254,6 +320,23 @@ zona libre demostrable y límites de máquina verificados.
 - explicar en la auditoría por qué cada espera se mantuvo o eliminó;
 - ofrecer un modo conservador que nunca elimine esperas;
 - comprobar mediante pruebas que los objetivos activos no cambien al reordenar.
+
+#### Cámara calefaccionada (P3 / prioridad baja)
+
+Implementar soporte validado para `M141` y `M191`, que controlan y esperan la
+temperatura de una cámara calefaccionada en firmware compatible. La anulación
+experimental actual permite continuar sólo después de consentimiento explícito,
+pero no demuestra que el nuevo orden preserve la estrategia térmica original.
+
+El trabajo deberá reconstruir el objetivo y la confirmación de la cámara como
+un canal térmico independiente, definir el tratamiento conservador de cambios
+de temperatura entre objetos y validar el resultado con G-code real y pruebas
+físicas supervisadas en una impresora aprobada.
+
+**Criterio de aceptación:** las esperas `M191` sólo se omiten cuando el objetivo
+exacto de cámara ya esté confirmado, cambios ambiguos o incompatibles se
+rechazan sin modificar el G-code y una matriz de compatibilidad registra la
+impresora, firmware, perfil y pruebas realizadas.
 
 ## Calidad y pruebas
 

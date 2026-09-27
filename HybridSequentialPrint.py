@@ -11,6 +11,7 @@ to edit G-code unless all structural and printer-profile checks pass.
 import json
 import math
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # These classes exist inside Cura. Unit tests provide minimal stubs so the pure
@@ -24,9 +25,12 @@ from UM.Message import Message
 # Precompiled regular expressions are roughly equivalent to creating one
 # Pattern instance in Java/Groovy and reusing it for every search.
 LAYER_RE = re.compile(r"(?m)^;LAYER:(-?\d+)\s*$")
-MOVE_RE = re.compile(r"^\s*(G0|G1)(?=\s|$)", re.IGNORECASE)
+MOVE_RE = re.compile(r"^\s*(G0|G1|G2|G3)(?=\s|$)", re.IGNORECASE)
+ARC_RE = re.compile(r"^\s*(G2|G3)(?=\s|$)", re.IGNORECASE)
+NON_XY_ARC_PLANE_RE = re.compile(r"^\s*(G18|G19)(?=\s|$)", re.IGNORECASE)
 AXIS_RE = re.compile(r"(?:^|\s)([XYZ])(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|;|$)", re.IGNORECASE)
 TEMP_COMMAND_RE = re.compile(r"^\s*(M104|M109|M140|M190)(?=\s|;|$)", re.IGNORECASE)
+CHAMBER_COMMAND_RE = re.compile(r"^\s*(M141|M191)(?=\s|;|$)", re.IGNORECASE)
 S_PARAM_RE = re.compile(r"(?:^|\s)S(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|;|$)", re.IGNORECASE)
 SCRIPT_VERSION = "0.2.0"
 # Preventive limit, not an algorithmic restriction. It stops a malformed file
@@ -34,9 +38,52 @@ SCRIPT_VERSION = "0.2.0"
 # resources inside Cura. It can be reviewed after larger real-world tests.
 MAX_OBJECTS = 50
 
+# Profiles in this list have been validated by the project. Keep it restricted
+# to printer/profile combinations that have passed G-code review and supervised
+# physical tests.
+APPROVED_MACHINE_NAMES = ("Ender 3 Pro",)
+# Add a local profile name here only for supervised experimental tests. Before
+# promoting a profile to APPROVED_MACHINE_NAMES, review its generated G-code,
+# verify its firmware commands and motion limits, and run simple two-object
+# prints under supervision. A successful test does not validate other firmware,
+# start/end G-code, nozzle, or accessory configurations of the same model.
+TEST_MACHINE_NAMES: Tuple[str, ...] = ()
+
 
 class ValidationError(ValueError):
     """Raised when changing the supplied G-code would be unsafe or ambiguous."""
+
+
+@dataclass
+class ObjectRuns:
+    """The G-code regions around the sequential per-object layer runs."""
+
+    prefix: List[str]
+    runs: List[List[str]]
+    suffix: List[str]
+
+
+def _machine_name_key(name: str) -> str:
+    """Normalize harmless spelling differences in a Cura machine name."""
+    return re.sub(r"[\s_-]+", "", name).casefold()
+
+
+def _machine_tier(machine_name: str) -> Optional[str]:
+    """Return the validation tier for a configured machine name, if any."""
+    key = _machine_name_key(machine_name)
+    if any(key == _machine_name_key(name) for name in APPROVED_MACHINE_NAMES):
+        return "approved"
+    if any(key == _machine_name_key(name) for name in TEST_MACHINE_NAMES):
+        return "test"
+    return None
+
+
+def _setting_float(value: Any, setting_name: str) -> float:
+    """Convert a Cura setting while making malformed values a safe rejection."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValidationError("{} must be numeric".format(setting_name))
 
 
 def _layer_number(chunk: str) -> Optional[int]:
@@ -49,10 +96,9 @@ def _layer_number(chunk: str) -> Optional[int]:
     return int(matches[0])
 
 
-def _split_object_runs(data: Sequence[str]) -> Tuple[List[str], List[List[str]], List[str]]:
+def _split_object_runs(data: Sequence[str]) -> ObjectRuns:
     """Split Cura's list into a header, sequential objects, and an ending.
 
-    The conceptual result is ``prefix, [object_a, object_b, ...], suffix``.
     Each object is itself a list of chunks, one per numbered layer.
     """
     # A Python list comprehension builds (index, layer) pairs.
@@ -96,7 +142,7 @@ def _split_object_runs(data: Sequence[str]) -> Tuple[List[str], List[List[str]],
         if len(run) < 2:
             raise ValidationError("every object must contain at least two layers")
         runs.append(run)
-    return prefix, runs, suffix
+    return ObjectRuns(prefix=prefix, runs=runs, suffix=suffix)
 
 
 def _max_z(chunks: Sequence[str]) -> float:
@@ -124,6 +170,35 @@ def _end_point(chunk: str) -> Tuple[float, float, float]:
     if set(position) != {"X", "Y", "Z"}:
         raise ValidationError("a common layer does not establish a complete XYZ end position")
     return position["X"], position["Y"], position["Z"]
+
+
+def _validate_arc_moves(chunks: Sequence[str]) -> None:
+    """Allow only planar XY arcs while preserving a reliable XYZ endpoint.
+
+    Arc Welder normally emits G2/G3 arcs in the XY plane without a Z word.
+    A helical arc or a non-XY arc plane needs more geometric validation than
+    this script provides, so it must leave the G-code unchanged.
+    """
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if NON_XY_ARC_PLANE_RE.match(line):
+                raise ValidationError("non-XY arc planes (G18/G19) are unsupported")
+            if ARC_RE.match(line) and any(axis.upper() == "Z" for axis, _ in AXIS_RE.findall(line)):
+                raise ValidationError("arcs with Z movement (G2/G3) are unsupported")
+
+
+def _validate_chamber_commands(chunks: Sequence[str], allow_unvalidated: bool) -> bool:
+    """Require explicit consent before reordering heated-chamber commands."""
+    found = any(
+        CHAMBER_COMMAND_RE.match(line)
+        for chunk in chunks
+        for line in chunk.splitlines()
+    )
+    if found and not allow_unvalidated:
+        raise ValidationError(
+            "heated-chamber commands (M141/M191) are unvalidated; enable the experimental setting only after review"
+        )
+    return found
 
 
 def _insert_transition(chunk: str, safe_z: float, target: Tuple[float, float, float]) -> str:
@@ -300,7 +375,8 @@ def _remove_redundant_interobject_waits(prefix: Sequence[str], common: Sequence[
     return optimized
 
 
-def transform(data: Sequence[str], clearance: float, machine_height: float) -> List[str]:
+def transform(data: Sequence[str], clearance: float, machine_height: float,
+              allow_unvalidated_chamber_commands: bool = False) -> List[str]:
     """Pure transformation: receive chunks and return a new list.
 
     It does not query Cura, display windows, or write files. This separation
@@ -316,7 +392,10 @@ def transform(data: Sequence[str], clearance: float, machine_height: float) -> L
         raise ValidationError("the script has already been applied")
 
     # 2) Reconstruct the logical object and layer structure.
-    prefix, runs, suffix = _split_object_runs(data)
+    object_runs = _split_object_runs(data)
+    prefix = object_runs.prefix
+    runs = object_runs.runs
+    suffix = object_runs.suffix
     layer_chunks = [chunk for run in runs for chunk in run]
     # Cura keeps End G-code in the final layer chunk.  Its final TIME_ELAPSED
     # marker provides the only validated boundary after which modal shutdown
@@ -326,6 +405,10 @@ def transform(data: Sequence[str], clearance: float, machine_height: float) -> L
         layer_chunks[-1] = layer_chunks[-1][:final_time]
     header_region = "\n".join(prefix)
     layer_region = "\n".join(layer_chunks)
+    _validate_arc_moves(layer_chunks)
+    has_unvalidated_chamber_commands = _validate_chamber_commands(
+        layer_chunks, allow_unvalidated_chamber_commands
+    )
     # Modes are sequential: an M82 in Start G-code is valid only if a later M83
     # leaves E relative before LAYER:0 begins.
     header_e_modes = re.findall(r"(?im)^\s*(M82|M83)(?:\s|;|$)", header_region)
@@ -357,10 +440,13 @@ def transform(data: Sequence[str], clearance: float, machine_height: float) -> L
         previous_height = heights[index]
 
     # 4) Mark and assemble the output: header + common layers + objects.
+    markers = ";HYBRID_SEQUENCE:APPLIED\n"
+    if has_unvalidated_chamber_commands:
+        markers += ";HYBRID_SEQUENCE:UNVALIDATED_CHAMBER_COMMANDS\n"
     if prefix:
-        prefix[0] += ";HYBRID_SEQUENCE:APPLIED\n"
+        prefix[0] += markers
     else:
-        common[0] = ";HYBRID_SEQUENCE:APPLIED\n" + common[0]
+        common[0] = markers + common[0]
     return prefix + common + remainder + suffix
 
 
@@ -385,6 +471,11 @@ class HybridSequentialPrint(Script):
                     "description": "Vertical clearance above the previously completed object.",
                     "unit": "mm", "type": "float", "default_value": 5.0,
                     "minimum_value": 2.0, "maximum_value_warning": 15.0
+                },
+                "allow_unvalidated_chamber_commands": {
+                    "label": "Allow unvalidated heated-chamber commands",
+                    "description": "Experimental: allow M141/M191 after G-code review and supervised testing.",
+                    "type": "bool", "default_value": False
                 }
             }
         })
@@ -397,8 +488,11 @@ class HybridSequentialPrint(Script):
             if stack is None:
                 raise ValidationError("Cura's active printer profile is unavailable")
             machine_name = str(stack.getProperty("machine_name", "value") or "")
-            if "ender-3 pro" not in machine_name.lower() and "ender 3 pro" not in machine_name.lower():
-                raise ValidationError("v{} is limited to an Ender 3 Pro profile".format(SCRIPT_VERSION))
+            machine_tier = _machine_tier(machine_name)
+            if machine_tier is None:
+                raise ValidationError("v{} requires an approved or test machine profile".format(SCRIPT_VERSION))
+            if machine_tier == "test":
+                Logger.log("w", "HybridSequentialPrint: using unvalidated test machine profile '%s'", machine_name)
             if stack.getProperty("print_sequence", "value") != "one_at_a_time":
                 raise ValidationError("Special Modes > Print Sequence must be One at a Time")
             if not bool(stack.getProperty("relative_extrusion", "value")):
@@ -407,11 +501,26 @@ class HybridSequentialPrint(Script):
                 raise ValidationError("supports are unsupported in v{}".format(SCRIPT_VERSION))
             if str(stack.getProperty("adhesion_type", "value")) not in ("none", "skirt"):
                 raise ValidationError("use Build Plate Adhesion = None or Skirt")
-            machine_height = float(stack.getProperty("machine_height", "value"))
-            result = transform(data, float(self.getSettingValueByKey("safe_clearance")), machine_height)
+            machine_height = _setting_float(
+                stack.getProperty("machine_height", "value"), "machine height"
+            )
+            safe_clearance = _setting_float(
+                self.getSettingValueByKey("safe_clearance"), "safe clearance"
+            )
+            result = transform(
+                data,
+                safe_clearance,
+                machine_height,
+                bool(self.getSettingValueByKey("allow_unvalidated_chamber_commands")),
+            )
+            if ";HYBRID_SEQUENCE:UNVALIDATED_CHAMBER_COMMANDS" in "\n".join(result):
+                Message(
+                    title="Hybrid Sequential Print warning",
+                    text="M141/M191 heated-chamber commands were reordered under an experimental override. Review the G-code and test only under supervision.",
+                ).show()
             Logger.log("i", "HybridSequentialPrint: transformed %d G-code chunks", len(data))
             return result
-        except (ValidationError, TypeError, ValueError) as error:
+        except ValidationError as error:
             # Fail closed: return the original content with a visible marker.
             # Never return a partially transformed file.
             message = "G-code was NOT changed: {}".format(error)

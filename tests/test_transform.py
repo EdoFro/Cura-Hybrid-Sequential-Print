@@ -35,6 +35,33 @@ class TransformTests(unittest.TestCase):
     def test_cura_settings_expose_release_version(self):
         settings = module.HybridSequentialPrint().getSettingDataString()
         self.assertIn("v{}".format(module.SCRIPT_VERSION), settings)
+        self.assertIn("allow_unvalidated_chamber_commands", settings)
+
+    def test_machine_name_normalization_accepts_approved_profile(self):
+        self.assertEqual(module._machine_tier("  ENDER-3_pro  "), "approved")
+
+    def test_split_object_runs_returns_named_regions(self):
+        object_runs = module._split_object_runs(self.chunks())
+        self.assertIsInstance(object_runs, module.ObjectRuns)
+        self.assertEqual(len(object_runs.prefix), 1)
+        self.assertEqual(len(object_runs.runs), 2)
+        self.assertEqual(len(object_runs.suffix), 1)
+
+    def test_setting_float_reports_malformed_values_as_validation_errors(self):
+        self.assertEqual(module._setting_float("250", "machine height"), 250.0)
+        with self.assertRaisesRegex(module.ValidationError, "machine height must be numeric"):
+            module._setting_float(None, "machine height")
+
+    def test_unknown_machine_profile_is_rejected(self):
+        self.assertIsNone(module._machine_tier("Unverified Printer"))
+
+    def test_test_machine_profile_has_its_own_tier(self):
+        original = module.TEST_MACHINE_NAMES
+        try:
+            module.TEST_MACHINE_NAMES = ("Experimental Printer",)
+            self.assertEqual(module._machine_tier("experimental-printer"), "test")
+        finally:
+            module.TEST_MACHINE_NAMES = original
 
     def many_objects(self, count):
         data = [";header\nM83\nG90\n"]
@@ -229,6 +256,38 @@ class TransformTests(unittest.TestCase):
         transitioned = next(chunk for chunk in result if "SAFE_TRANSITION" in chunk)
         self.assertIn("G0 X20.000 Y10.000", transitioned)
         self.assertIn("G0 Z0.200 ; hybrid: descend", transitioned)
+
+    def test_uses_planar_arc_endpoint_when_resuming_an_object(self):
+        data = self.chunks()
+        data[1] += "G3 X30 Y20 I5 J5 E0.8\n"
+        result = module.transform(data, 5.0, 250.0)
+        transitioned = next(chunk for chunk in result if "SAFE_TRANSITION" in chunk)
+        self.assertIn("G0 X30.000 Y20.000", transitioned)
+        self.assertIn("G0 Z0.200 ; hybrid: descend", transitioned)
+
+    def test_rejects_arc_with_z_movement(self):
+        data = self.chunks()
+        data[1] += "G2 X30 Y20 Z0.3 I5 J5 E0.8\n"
+        with self.assertRaisesRegex(module.ValidationError, "arcs with Z"):
+            module.transform(data, 5.0, 250.0)
+
+    def test_rejects_non_xy_arc_plane(self):
+        data = self.chunks()
+        data[1] += "G18\nG2 X30 I5 K5 E0.8\n"
+        with self.assertRaisesRegex(module.ValidationError, "non-XY arc planes"):
+            module.transform(data, 5.0, 250.0)
+
+    def test_rejects_heated_chamber_commands_without_explicit_consent(self):
+        data = self.chunks()
+        data[1] += "M141 S45\nM191 S45\n"
+        with self.assertRaisesRegex(module.ValidationError, "heated-chamber commands"):
+            module.transform(data, 5.0, 250.0)
+
+    def test_marks_heated_chamber_override_for_audit(self):
+        data = self.chunks()
+        data[1] += "M141 S45\nM191 S45\n"
+        result = module.transform(data, 5.0, 250.0, allow_unvalidated_chamber_commands=True)
+        self.assertIn("HYBRID_SEQUENCE:UNVALIDATED_CHAMBER_COMMANDS", "".join(result))
 
     def test_rejects_indented_absolute_extrusion(self):
         data = self.chunks(); data[0] = data[0].replace("M83", "  m82")

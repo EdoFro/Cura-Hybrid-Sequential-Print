@@ -16,11 +16,16 @@ automated tests, and first pass static G-code review.
 - [Safety and compatibility improvements](#safety-and-compatibility-improvements)
   - [Explicit modal parser](#explicit-modal-parser)
   - [More complete profile validation](#more-complete-profile-validation)
+  - [Absolute extrusion support](#absolute-extrusion-support-p1--high-priority)
+  - [Normal supports](#normal-supports-p2--medium-priority)
+  - [Tree supports](#tree-supports-p3--low-priority)
+  - [Raft and adhesion structures](#raft-and-adhesion-structures-p2--medium-priority)
   - [Multi-stage sequential printing](#multi-stage-sequential-printing)
   - [Automatic detection of thermal stages](#automatic-detection-of-thermal-stages)
   - [Optional filament-change pause](#optional-filament-change-pause-between-stages)
   - [Transitions and parking](#configurable-transitions-and-parking-area)
   - [Extended thermal control](#extended-thermal-control)
+    - [Heated chamber](#heated-chamber-p3--low-priority)
 - [Quality and tests](#quality-and-tests)
 - [User experience](#user-experience)
 - [Ideas from physical tests](#ideas-recorded-from-physical-tests)
@@ -33,6 +38,10 @@ automated tests, and first pass static G-code review.
 | Print ordering | Order by height, position, distance, or manual selection | Medium | Pending |
 | Physical safety | Collision detection and a safe parking area | High | Research required |
 | G-code compatibility | Modal parser and extended profile validation | High | Pending |
+| Extrusion mode | Safe absolute-extrusion (`M82`) support | High | Pending |
+| Normal supports | Validate object-local support structures | Medium | Pending |
+| Tree supports | Analyze geometry and lateral variation by layer | Low | Pending |
+| Complex adhesion | Raft and its relationship to previous/shared layers | Medium | Pending |
 | Staged printing | Multiple configurable boundaries and automatic thermal detection | Medium | Proposed design |
 | Filament changes | Pause, beep, parking, and safe resumption | Medium | Proposed design |
 | Thermal control | More commands, tools, and a conservative mode | Medium | Partially implemented |
@@ -145,6 +154,61 @@ relevant unknown construction would cause rejection.
 - verify that effective settings match those encoded in the `SETTING_3` comment
   when available.
 
+### Absolute extrusion support (P1 / high priority)
+
+Allow G-code using absolute extrusion (`M82`) without changing the amount of
+filament extruded when layers are reordered. Before resuming each object, the
+script must restore the E value expected by that block through a validated
+sequence, for example `G90`, `M82`, and `G92 E...`, according to the compatible
+firmware.
+
+Implementation must reconstruct modal E state at the end of every common layer,
+including `G0`/`G1`/`G2`/`G3` moves, retractions, and `G92 E...` resets. It must
+reject ambiguous transitions between `M82` and `M83`, multiple extruders, tools,
+or unsupported E formats. It must also verify the effect of `G90` on extrusion
+mode for every supported firmware.
+
+**Acceptance criterion:** every resumption restores the E value expected by the
+original G-code; fixtures cover extrusion, retractions, E resets, and arcs; and
+supervised physical tests on an approved printer confirm no over-extrusion,
+under-extrusion, or unexpected retractions.
+
+### Normal supports (P2 / medium priority)
+
+Investigate whether Cura normal supports remain unambiguously within each
+object's block in `One at a Time` G-code. The analysis must verify that every
+support path, interface, and support roof/floor belongs to one object and moves
+with it, without creating travels that cross already completed parts.
+
+**Acceptance criterion:** real fixtures with normal supports preserve every
+path exactly once, layers and preludes remain unambiguous, and supervised
+physical tests confirm correct printing. Until then, `support_enable` must
+continue to be rejected.
+
+### Tree supports (P3 / low priority)
+
+Evaluate tree supports separately. Their branches can vary laterally between
+layers and approach other objects, so their safety cannot be inferred from
+normal supports. Research must include each branch's effective geometry and the
+print head's collision constraints.
+
+**Acceptance criterion:** conservative validation demonstrates that no branch
+or print-head transition crosses an incompatible part or support; fixtures and
+physical tests cover multi-object cases. Until then, tree supports remain
+rejected.
+
+### Raft and adhesion structures (P2 / medium priority)
+
+Investigate raft support as a feature separate from supports. A raft can add
+negative layers and shared structures before `;LAYER:0`, which do not belong
+unambiguously to one object or to the current common phase. Brim remains out of
+scope until equivalent validation of its paths exists.
+
+**Acceptance criterion:** the analysis distinguishes raft from each object's
+layers, preserves every path and thermal/modal state, and supervised physical
+tests validate adhesion and transitions. Until then, raft and brim remain
+rejected.
+
 ### Multi-stage sequential printing
 
 Allow users to configure several layers where a new stage begins. For example,
@@ -243,6 +307,23 @@ wiping path, but only with a demonstrably clear area and verified machine limits
 - explain in the audit why each wait was retained or removed;
 - offer a conservative mode that never removes waits;
 - use tests to confirm active targets do not change during reordering.
+
+#### Heated chamber (P3 / low priority)
+
+Implement validated support for `M141` and `M191`, which set and wait for a
+heated-chamber temperature in compatible firmware. The current experimental
+override allows continuation only after explicit consent, but does not prove
+that reordering preserves the original thermal strategy.
+
+The work must reconstruct chamber target and confirmation as an independent
+thermal channel, define conservative handling for temperature changes between
+objects, and validate the result with real G-code and supervised physical tests
+on an approved printer.
+
+**Acceptance criterion:** `M191` waits are omitted only when the exact chamber
+target is already confirmed; ambiguous or incompatible changes are rejected
+without modifying G-code; and a compatibility matrix records the printer,
+firmware, profile, and tests performed.
 
 ## Quality and tests
 

@@ -54,6 +54,10 @@ flowchart LR
 - One extruder, no supports, no raft/brim, no overlapping modifiers, no shared prime tower.
 - Exactly one common layer (`;LAYER:0`). Negative raft layers are rejected implicitly.
 - Cura's own one-at-a-time clearance validation must accept the placement.
+- Heated-chamber commands (`M141`/`M191`) in the reordered region are rejected
+  by default. The experimental override does not validate their thermal order;
+  enable it only after reviewing the exported G-code and planning supervised
+  testing.
 
 Anything outside this envelope is unsupported even if the script happens to accept it.
 
@@ -90,6 +94,11 @@ to normal temperature, it defers that command in all but the final common layer.
 The final copy remains at Cura's original position, preserving its thermal lead
 time before the first resumed `LAYER:1`. Repeated unchanged targets are retained;
 inconsistent or ambiguous actual-transition patterns are rejected.
+Heated-chamber commands (`M141`/`M191`) are not yet included in this thermal
+model. If they appear in the reordered region, the script rejects the G-code by
+default. The **Allow unvalidated heated-chamber commands** setting is an
+explicit experimental override: it adds an audit marker and warning, but does
+not establish that chamber temperatures remain correct after reordering.
 
 The script refuses to edit when the transformed region contains absolute extrusion (`M82`), relative XYZ (`G91`), XYZ coordinate resets (`G92`), negative/missing/repeated/non-monotonic layer markers, an object count outside two to 50, a common layer that does not establish a complete XYZ end position, a duplicate application, invalid dimensions, or a clearance above machine height. The 50-object ceiling is a preventive resource guard, not an algorithmic restriction. Commands in Cura's untouched ending block—detached or following the final `;TIME_ELAPSED:` marker, where standard Ender 3 G-code commonly uses temporary `G91` and a final `M82`—are permitted. Before resuming an object, the script restores the final XYZ position recorded from that object's common layer; this is required because Cura 5.12 may begin `LAYER:1` with immediate extrusion and no entry travel. It never treats `;MESH:` as an authoritative object boundary: CuraEngine has historically emitted travel/wipe motion on the unexpected side of those comments.
 
