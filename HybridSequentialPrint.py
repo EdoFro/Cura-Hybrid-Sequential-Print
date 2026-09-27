@@ -32,7 +32,7 @@ AXIS_RE = re.compile(r"(?:^|\s)([XYZ])(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|;|$)", re
 TEMP_COMMAND_RE = re.compile(r"^\s*(M104|M109|M140|M190)(?=\s|;|$)", re.IGNORECASE)
 CHAMBER_COMMAND_RE = re.compile(r"^\s*(M141|M191)(?=\s|;|$)", re.IGNORECASE)
 S_PARAM_RE = re.compile(r"(?:^|\s)S(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|;|$)", re.IGNORECASE)
-SCRIPT_VERSION = "0.2.0"
+SCRIPT_VERSION = "0.3.0"
 # Preventive limit, not an algorithmic restriction. It stops a malformed file
 # containing thousands of false ``;LAYER:0`` starts from consuming excessive
 # resources inside Cura. It can be reviewed after larger real-world tests.

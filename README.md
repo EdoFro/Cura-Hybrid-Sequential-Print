@@ -1,6 +1,6 @@
 # Cura Hybrid Sequential Print
 
-Experimental, fail-closed post-processing script for **UltiMaker Cura 5.12.0** and an **Ender 3 Pro**. Version 0.2 takes G-code already sliced **One at a Time**, prints layer 0 of every object first, then completes each object sequentially.
+Experimental, fail-closed post-processing script for **UltiMaker Cura 5.12.0** and an **Ender 3 Pro**. Version 0.3 takes G-code already sliced **One at a Time**, prints layer 0 of every object first, then completes each object sequentially.
 
 ## Motivation
 
@@ -45,7 +45,7 @@ flowchart LR
     I -->|post-process| H
 ```
 
-## Compatibility envelope (v0.2)
+## Compatibility envelope (v0.3)
 
 - Cura 5.12.0; Ender 3 Pro profile; Marlin-compatible G-code.
 - Two to 50 simple, separate objects, each at least two layers tall. The upper
@@ -132,7 +132,7 @@ Proposed improvements and unimplemented ideas are maintained in the roadmap in
 
 ## Status
 
-This is an experimental **v0.2.0 release**, not a claim of production safety. See [docs/design.md](docs/design.md), [docs/limitations.md](docs/limitations.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
+This is an experimental **v0.3.0 release**, not a claim of production safety. See [docs/design.md](docs/design.md), [docs/limitations.md](docs/limitations.md), and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Author
 

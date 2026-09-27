@@ -4,6 +4,35 @@ All notable changes follow Keep a Changelog; versions follow Semantic Versioning
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
+### Added
+
+- Permit configured approved or local test printer profiles, with a warning for
+  unvalidated test profiles.
+- Support planar XY `G2`/`G3` arcs while rejecting Z-moving arcs and non-XY
+  arc planes.
+- Add an explicit experimental override for reordered heated-chamber
+  `M141`/`M191` commands, including a visible warning and audit marker.
+- Add bilingual roadmap tasks for absolute extrusion, normal supports, tree
+  supports, raft/adhesion structures, and validated heated-chamber support.
+
+### Changed
+
+- Represent split G-code regions with the named `ObjectRuns` data structure.
+- Convert malformed Cura numeric settings into specific validation rejections
+  and avoid catching unexpected internal `TypeError` exceptions.
+
+### Tests
+
+- Expand regression coverage for printer tiers, planar arcs, heated-chamber
+  consent, named split regions, and malformed settings.
+
+### Documentation
+
+- Document heated-chamber limitations, risks, and the experimental override in
+  the README.
+
 ## [0.2.0] - 2026-09-24
 
 ### Added
